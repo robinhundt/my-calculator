@@ -4,7 +4,10 @@ use std::{env, io};
 fn handle_input(input: &str) {
     match eval(input) {
         Ok(result) => println!("{}", result),
-        Err(err) => eprintln!("Encountered error: {}", err),
+        Err(err) => {
+            let err: anyhow::Error = err.into();
+            eprintln!("{:#}", err);
+        }
     }
 }
 
