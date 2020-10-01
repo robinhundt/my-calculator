@@ -2,10 +2,13 @@ use bigdecimal::BigDecimal;
 use std::iter::Peekable;
 use thiserror::Error;
 
-pub fn eval(input: &str) -> Result<BigDecimal, EvalError> {
+pub fn eval(input: &str, print_parse_tree: bool) -> Result<BigDecimal, EvalError> {
     let tokens = lex(input)?;
     let mut token_iter = tokens.into_iter().peekable();
     let parse_tree = parse_expr(&mut token_iter)?;
+    if print_parse_tree {
+        eprintln!("Parse tree:\n{:#?}", parse_tree)
+    }
     Ok(eval_tree(&parse_tree))
 }
 
@@ -153,7 +156,7 @@ fn parse_expr_rec(
         let op = input.next().unwrap();
         let mut rhs = parse_primary(input)?;
         lookahead = input.peek();
-        while lookahead.map(Token::op_precedence).flatten() >= op.op_precedence() {
+        while lookahead.map(Token::op_precedence).flatten() > op.op_precedence() {
             let lookahead_prec = lookahead.unwrap().op_precedence().unwrap();
             rhs = parse_expr_rec(rhs, input, lookahead_prec)?;
             lookahead = input.peek();
@@ -260,49 +263,56 @@ mod tests {
     #[test]
     fn compute_sub() -> Result<(), EvalError> {
         let expected: BigDecimal = 0.try_into().unwrap();
-        assert_eq!(expected, eval("42 - 42")?);
+        assert_eq!(expected, eval("42 - 42", true)?);
         Ok(())
     }
 
     #[test]
     fn compute_mul() -> Result<(), EvalError> {
         let expected: BigDecimal = 84.0.try_into().unwrap();
-        assert_eq!(expected, eval("2 * 42")?);
+        assert_eq!(expected, eval("2 * 42", true)?);
         Ok(())
     }
 
     #[test]
     fn compute_div() -> Result<(), EvalError> {
         let expected: BigDecimal = 21.0.try_into().unwrap();
-        assert_eq!(expected, eval("42 / 2")?);
+        assert_eq!(expected, eval("42 / 2", true)?);
         Ok(())
     }
 
     #[test]
     fn compute_with_precedence() -> Result<(), EvalError> {
         let expected: BigDecimal = 25.0.try_into().unwrap();
-        assert_eq!(expected, eval("5 + 10 * 2")?);
+        assert_eq!(expected, eval("5 + 10 * 2", true)?);
         Ok(())
     }
 
     #[test]
     fn compute_with_braces() -> Result<(), EvalError> {
         let expected: BigDecimal = 42.0.try_into().unwrap();
-        assert_eq!(expected, eval("2 * (10 + 11)")?);
+        assert_eq!(expected, eval("2 * (10 + 11)", true)?);
         Ok(())
     }
 
     #[test]
     fn compute_negation() -> Result<(), EvalError> {
         let expected: BigDecimal = (-42.0).try_into().unwrap();
-        assert_eq!(expected, eval("-2 * (10 + 11)")?);
+        assert_eq!(expected, eval("-2 * (10 + 11)", true)?);
+        Ok(())
+    }
+
+    #[test]
+    fn compute_alternating_add_sub() -> Result<(), EvalError> {
+        let expected: BigDecimal = (5.0).try_into().unwrap();
+        assert_eq!(expected, eval("5 - 5 + 5", true)?);
         Ok(())
     }
 
     #[test]
     fn compute_check_precision() -> Result<(), EvalError> {
         let expected: BigDecimal = 0.3.try_into().unwrap();
-        assert_eq!(expected, eval("0.1 + 0.2")?);
+        assert_eq!(expected, eval("0.1 + 0.2", true)?);
         Ok(())
     }
 }
