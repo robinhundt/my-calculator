@@ -1,15 +1,25 @@
 use bigdecimal::BigDecimal;
+use std::collections::HashMap;
 use std::iter::Peekable;
 use thiserror::Error;
 
-pub fn eval(input: &str, print_parse_tree: bool) -> Result<BigDecimal, EvalError> {
+pub fn eval(
+    input: &str,
+    context: &mut EvalContext,
+    print_parse_tree: bool,
+) -> Result<BigDecimal, EvalError> {
     let tokens = lex(input)?;
     let mut token_iter = tokens.into_iter().peekable();
     let parse_tree = parse_expr(&mut token_iter)?;
     if print_parse_tree {
         eprintln!("Parse tree:\n{:#?}", parse_tree)
     }
-    Ok(eval_tree(&parse_tree))
+    eval_tree(&parse_tree, context)
+}
+
+#[derive(Debug, Default)]
+pub struct EvalContext {
+    variables: HashMap<String, BigDecimal>,
 }
 
 #[derive(Error, Debug)]
@@ -20,6 +30,8 @@ pub enum EvalError {
     ParseError(#[from] ParseError),
     #[error("Can not evaluate empty input")]
     EmptyInput,
+    #[error("Variable \"{0}\" has not been assigned")]
+    UnassignedVariable(String),
 }
 
 #[derive(Error, Debug)]
@@ -40,6 +52,8 @@ pub enum ParseError {
     UnmatchedToken,
     #[error("Expected binary operator")]
     ExpectedBinaryOperator,
+    #[error("Can only assign to variable")]
+    ExpectedVariable,
     #[error("Can not parse empty input")]
     EmptyInput,
 }
@@ -47,8 +61,10 @@ pub enum ParseError {
 #[derive(Debug)]
 enum Token {
     Number(BigDecimal),
+    Variable(String),
     ParenStart,
     ParenClose,
+    Assignment,
     Plus,
     Minus,
     Mul,
@@ -58,8 +74,9 @@ enum Token {
 impl Token {
     fn op_precedence(&self) -> Option<usize> {
         match self {
-            Token::Plus | Token::Minus => Some(0),
-            Token::Mul | Token::Div => Some(1),
+            Token::Assignment => Some(0),
+            Token::Plus | Token::Minus => Some(1),
+            Token::Mul | Token::Div => Some(2),
             _ => None,
         }
     }
@@ -68,7 +85,9 @@ impl Token {
 #[derive(Debug)]
 enum ParseTree {
     Number(BigDecimal),
+    Variable(String),
     Neg(Box<ParseTree>),
+    Assignment(String, Box<ParseTree>),
     Plus(Box<ParseTree>, Box<ParseTree>),
     Sub(Box<ParseTree>, Box<ParseTree>),
     Mul(Box<ParseTree>, Box<ParseTree>),
@@ -82,6 +101,13 @@ impl ParseTree {
             Token::Minus => Self::Sub(self, other),
             Token::Mul => Self::Mul(self, other),
             Token::Div => Self::Div(self, other),
+            Token::Assignment => {
+                if let Self::Variable(name) = *self {
+                    Self::Assignment(name, other)
+                } else {
+                    return Err(ParseError::ExpectedVariable);
+                }
+            }
             _ => return Err(ParseError::ExpectedBinaryOperator),
         };
         Ok(Box::new(applied))
@@ -107,7 +133,9 @@ fn lex(input: &str) -> Result<Vec<Token>, LexError> {
             b'-' => Token::Minus,
             b'*' => Token::Mul,
             b'/' => Token::Div,
+            b'=' => Token::Assignment,
             b'0'..=b'9' | b'.' => Token::Number(parse_number(idx, &mut byte_iter, input)?),
+            b'a'..=b'z' | b'_' => Token::Variable(parse_variable(idx, &mut byte_iter, input)),
             unknown => {
                 return Err(LexError::IllegalToken(
                     String::from_utf8_lossy(&[unknown]).into_owned(),
@@ -138,6 +166,23 @@ fn parse_number(
         .parse()
         .map_err(|_| LexError::IllegalNumber(input[start_idx..end_idx].to_string()))?;
     Ok(number)
+}
+
+fn parse_variable(
+    start_idx: usize,
+    byte_iter: &mut Peekable<impl Iterator<Item = (usize, u8)>>,
+    input: &str,
+) -> String {
+    let mut end_idx = start_idx + 1;
+    while let Some((_, byte)) = byte_iter.peek() {
+        if matches!(byte, b'a'..=b'z' | b'-') {
+            byte_iter.next();
+            end_idx += 1;
+        } else {
+            break;
+        }
+    }
+    input[start_idx..end_idx].to_string()
 }
 
 fn parse_expr(
@@ -179,20 +224,32 @@ fn parse_primary(
         }
         Some(Token::Number(num)) => Ok(Box::new(ParseTree::Number(num))),
         Some(Token::Minus) => Ok(Box::new(ParseTree::Neg(parse_primary(input)?))),
+        Some(Token::Variable(name)) => Ok(Box::new(ParseTree::Variable(name))),
         Some(_) => Err(ParseError::UnmatchedToken),
         None => Err(ParseError::EmptyInput),
     }
 }
 
-fn eval_tree(parse_tree: &ParseTree) -> BigDecimal {
-    match parse_tree {
+fn eval_tree(parse_tree: &ParseTree, context: &mut EvalContext) -> Result<BigDecimal, EvalError> {
+    let result = match parse_tree {
         ParseTree::Number(num) => num.clone(),
-        ParseTree::Neg(tree) => -eval_tree(tree),
-        ParseTree::Plus(left, right) => eval_tree(left) + eval_tree(right),
-        ParseTree::Sub(left, right) => eval_tree(left) - eval_tree(right),
-        ParseTree::Mul(left, right) => eval_tree(left) * eval_tree(right),
-        ParseTree::Div(left, right) => eval_tree(left) / eval_tree(right),
-    }
+        ParseTree::Variable(name) => context
+            .variables
+            .get(name)
+            .cloned()
+            .ok_or_else(|| EvalError::UnassignedVariable(name.clone()))?,
+        ParseTree::Assignment(name, tree) => {
+            let result = eval_tree(tree, context)?;
+            context.variables.insert(name.clone(), result.clone());
+            result
+        }
+        ParseTree::Neg(tree) => -eval_tree(tree, context)?,
+        ParseTree::Plus(left, right) => eval_tree(left, context)? + eval_tree(right, context)?,
+        ParseTree::Sub(left, right) => eval_tree(left, context)? - eval_tree(right, context)?,
+        ParseTree::Mul(left, right) => eval_tree(left, context)? * eval_tree(right, context)?,
+        ParseTree::Div(left, right) => eval_tree(left, context)? / eval_tree(right, context)?,
+    };
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -263,56 +320,94 @@ mod tests {
     #[test]
     fn compute_sub() -> Result<(), EvalError> {
         let expected: BigDecimal = 0.try_into().unwrap();
-        assert_eq!(expected, eval("42 - 42", true)?);
+        assert_eq!(
+            expected,
+            eval("42 - 42", &mut EvalContext::default(), true)?
+        );
         Ok(())
     }
 
     #[test]
     fn compute_mul() -> Result<(), EvalError> {
         let expected: BigDecimal = 84.0.try_into().unwrap();
-        assert_eq!(expected, eval("2 * 42", true)?);
+        assert_eq!(expected, eval("2 * 42", &mut EvalContext::default(), true)?);
         Ok(())
     }
 
     #[test]
     fn compute_div() -> Result<(), EvalError> {
         let expected: BigDecimal = 21.0.try_into().unwrap();
-        assert_eq!(expected, eval("42 / 2", true)?);
+        assert_eq!(expected, eval("42 / 2", &mut EvalContext::default(), true)?);
         Ok(())
     }
 
     #[test]
     fn compute_with_precedence() -> Result<(), EvalError> {
         let expected: BigDecimal = 25.0.try_into().unwrap();
-        assert_eq!(expected, eval("5 + 10 * 2", true)?);
+        assert_eq!(
+            expected,
+            eval("5 + 10 * 2", &mut EvalContext::default(), true)?
+        );
         Ok(())
     }
 
     #[test]
     fn compute_with_braces() -> Result<(), EvalError> {
         let expected: BigDecimal = 42.0.try_into().unwrap();
-        assert_eq!(expected, eval("2 * (10 + 11)", true)?);
+        assert_eq!(
+            expected,
+            eval("2 * (10 + 11)", &mut EvalContext::default(), true)?
+        );
         Ok(())
     }
 
     #[test]
     fn compute_negation() -> Result<(), EvalError> {
         let expected: BigDecimal = (-42.0).try_into().unwrap();
-        assert_eq!(expected, eval("-2 * (10 + 11)", true)?);
+        assert_eq!(
+            expected,
+            eval("-2 * (10 + 11)", &mut EvalContext::default(), true)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn set_variable() -> Result<(), EvalError> {
+        let expected: BigDecimal = (666.0).try_into().unwrap();
+        assert_eq!(
+            expected,
+            eval("devil = 666", &mut EvalContext::default(), true)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn set_and_use_variable() -> Result<(), EvalError> {
+        let expected: BigDecimal = (666.0).try_into().unwrap();
+        let mut context = EvalContext::default();
+        assert_eq!(expected, eval("devil = 666", &mut context, true)?);
+        let expected: BigDecimal = (0.0).try_into().unwrap();
+        assert_eq!(expected, eval("devil - 666", &mut context, true)?);
         Ok(())
     }
 
     #[test]
     fn compute_alternating_add_sub() -> Result<(), EvalError> {
         let expected: BigDecimal = (5.0).try_into().unwrap();
-        assert_eq!(expected, eval("5 - 5 + 5", true)?);
+        assert_eq!(
+            expected,
+            eval("5 - 5 + 5", &mut EvalContext::default(), true)?
+        );
         Ok(())
     }
 
     #[test]
     fn compute_check_precision() -> Result<(), EvalError> {
         let expected: BigDecimal = 0.3.try_into().unwrap();
-        assert_eq!(expected, eval("0.1 + 0.2", true)?);
+        assert_eq!(
+            expected,
+            eval("0.1 + 0.2", &mut EvalContext::default(), true)?
+        );
         Ok(())
     }
 }
