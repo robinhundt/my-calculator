@@ -1,6 +1,6 @@
 use clap::Clap;
-use my_calculator::eval;
-use std::{env, io};
+use my_calculator::{eval, EvalContext};
+use std::io;
 
 /// A small calculator intended as a bc alternative.
 #[derive(Clap)]
@@ -12,8 +12,8 @@ struct Opts {
     print_parse_tree: bool,
 }
 
-fn handle_input(input: &str, opts: &Opts) {
-    match eval(input, opts.print_parse_tree) {
+fn handle_input(input: &str, context: &mut EvalContext, opts: &Opts) {
+    match eval(input, context, opts.print_parse_tree) {
         Ok(result) => println!("{}", result),
         Err(err) => {
             let err: anyhow::Error = err.into();
@@ -24,16 +24,16 @@ fn handle_input(input: &str, opts: &Opts) {
 
 fn main() {
     let opts: Opts = Opts::parse();
-    let mut args = env::args();
+    let mut eval_context = EvalContext::default();
     if let Some(input) = &opts.expression {
-        handle_input(&input, &opts)
+        handle_input(&input, &mut eval_context, &opts)
     } else {
         println!("Type in an expression and hit enter");
         let mut buffer = String::new();
         let stdin = io::stdin();
         loop {
             stdin.read_line(&mut buffer).expect("Stdin error");
-            handle_input(&buffer, &opts);
+            handle_input(&buffer, &mut eval_context, &opts);
             buffer.clear();
         }
     }
